@@ -1,7 +1,7 @@
 package labrpc
 
 //
-// channel-based RPC, for 6.5840 labs.
+// channel-based RPC, for MIT6824 labs.
 //
 // simulates a network that can lose requests, lose replies,
 // delay messages, and entirely disconnect particular hosts.
@@ -49,15 +49,18 @@ package labrpc
 //   pass svc to srv.AddService()
 //
 
-import "6.5840/labgob"
-import "bytes"
-import "reflect"
-import "sync"
-import "log"
-import "strings"
-import "math/rand"
-import "time"
-import "sync/atomic"
+import (
+	"bytes"
+	"log"
+	"math/rand"
+	"reflect"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"MIT6824/labgob"
+)
 
 type reqMsg struct {
 	endname  interface{} // name of sending ClientEnd
