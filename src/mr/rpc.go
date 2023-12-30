@@ -32,8 +32,11 @@ type MapreduceReply struct {
 	TaskType string
 	FileName []string
 	WorkerId int
-	ReduceId int
-	MapWorkers []int
+	ReduceId int // unique id given to each reduce task
+	MapId    int // unique id given to each map task
+	// MapWorkers []int
+	MapTaskNum int
+	ReduceNum  int
 }
 
 // Add your RPC definitions here.

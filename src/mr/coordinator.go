@@ -11,19 +11,25 @@ import (
 )
 
 type Coordinator struct {
-	input_files         []string
-	worker_state        map[int]string // "Map" "Reduce" "Wait" "Finished"
-	next_worker_id      int            // every worker has a unique id
-	next_map_input      int
-	map_workers         map[int]bool // map worker id
-	last_task_time      map[int]time.Time
+	input_files []string
+	// worker_state        map[int]string // "Map" "Reduce" "Wait" "Finished"
+	next_worker_id int // every worker has a unique id
+	next_map_input int
+	// map_workers         map[int]bool // map worker id
+	worker_infos        map[int]workerInfo
 	finished_reduce_num int // number of finished reduce task
 	reduce_num          int
 	next_reduce_id      int
 	mutex               sync.Mutex
 }
 
-
+type workerInfo struct {
+	last_tast_time   time.Time
+	last_input_files []string
+	state            string // "Map" "Reduce" "Wait" "Finished"
+	reduce_id        int
+	map_id           int
+}
 
 // Your code here -- RPC handlers for the worker to call.
 
@@ -36,80 +42,109 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 }
 
 func (c *Coordinator) AskForTask(args *MapreduceArgs, reply *MapreduceReply) error {
+	c.mutex.Lock()
+
 	if c.Done() {
 		reply.TaskType = "Finished"
+		c.mutex.Unlock()
 		return nil
 	}
 
 	if args.WorkerId == -1 {
-		c.mutex.Lock()
 		args.WorkerId = c.next_worker_id
 		c.next_worker_id++
-		c.mutex.Unlock()
 	}
 
-	c.mutex.Lock()
 	if c.next_map_input < len(c.input_files) {
 		reply.TaskType = "Map"
 		reply.WorkerId = args.WorkerId
 		reply.FileName = c.input_files[c.next_map_input : c.next_map_input+1]
-		c.worker_state[args.WorkerId] = "Map"
-		c.last_task_time[reply.WorkerId] = time.Now()
-		c.map_workers[args.WorkerId] = true
+		reply.ReduceNum = c.reduce_num
+		reply.MapId = c.next_map_input
+		c.worker_infos[args.WorkerId] = workerInfo{last_tast_time: time.Now(), last_input_files: reply.FileName, state: "Map", map_id: c.next_map_input}
+		// c.map_workers[args.WorkerId] = true
 		c.next_map_input++
 		c.mutex.Unlock()
 		return nil
 	}
-	c.mutex.Unlock()
 
 	// check all the map tasks are finished
 	var running_worker int
-	if !checkMapFinished(c,&running_worker) {
+	if !checkMapFinished(c, &running_worker) {
 		// check if running worker has run for 10s
-		if time.Since(c.last_task_time[running_worker]) > 10*time.Second {
+		if time.Since(c.worker_infos[running_worker].last_tast_time) > 10*time.Second {
 			reply.TaskType = "Map"
-			reply.WorkerId = running_worker
-		
-		
+			reply.WorkerId = args.WorkerId
+			reply.FileName = c.worker_infos[running_worker].last_input_files
+			reply.ReduceNum = c.reduce_num
+			reply.MapId = c.worker_infos[running_worker].map_id
+			c.worker_infos[args.WorkerId] = workerInfo{last_tast_time: time.Now(), last_input_files: reply.FileName, state: "Map"}
+			// c.map_workers[args.WorkerId] = true
+			// delete(c.map_workers, running_worker)
+			delete(c.worker_infos, running_worker)
+		} else {
+			reply.TaskType = "Wait"
+			reply.WorkerId = args.WorkerId
 		}
-		reply.TaskType = "Wait"
+		c.mutex.Unlock()
 		return nil
 	}
 
 	// reduce task
-	c.mutex.Lock()
 	if c.next_reduce_id < c.reduce_num {
 		reply.TaskType = "Reduce"
 		reply.ReduceId = c.next_reduce_id
 		reply.WorkerId = args.WorkerId
-		for key := range c.map_workers {
-			reply.MapWorkers = append(reply.MapWorkers, key)
-		}
+		reply.MapTaskNum = len(c.input_files)
+		// for key := range c.map_workers {
+		// 	reply.MapWorkers = append(reply.MapWorkers, key)
+		// }
 		c.next_reduce_id++
-		c.worker_state[args.WorkerId] = "Reduce"
-		c.last_task_time[reply.WorkerId] = time.Now()
+		// c.worker_state[args.WorkerId] = "Reduce"
+		c.worker_infos[args.WorkerId] = workerInfo{last_tast_time: time.Now(), state: "Reduce", reduce_id: reply.ReduceId}
+		c.mutex.Unlock()
+		return nil
 	}
+
+	// check if reduce task has run for 10s
+	var crash_reduce_worker int
+	if checkReduceIfCrash(c, &crash_reduce_worker) {
+		reply.TaskType = "Reduce"
+		reply.ReduceId = c.worker_infos[crash_reduce_worker].reduce_id
+		reply.WorkerId = args.WorkerId
+		reply.MapTaskNum = len(c.input_files)
+		// for key := range c.map_workers {
+		// 	reply.MapWorkers = append(reply.MapWorkers, key)
+		// }
+		c.worker_infos[args.WorkerId] = workerInfo{last_tast_time: time.Now(), state: "Reduce", reduce_id: reply.ReduceId}
+		delete(c.worker_infos, crash_reduce_worker)
+		c.mutex.Unlock()
+		return nil
+	}
+	reply.TaskType = "Wait"
+	reply.WorkerId = args.WorkerId
+	log.Printf("wait for reduce task finishing\n")
 	c.mutex.Unlock()
 	return nil
 }
 
 // TODO success: reply.Y = 1 fail: reply.Y = 0
 func (c *Coordinator) FinishTask(args *ExampleArgs, reply *ExampleReply) error {
-	switch c.worker_state[args.X] {
+	c.mutex.Lock()
+	switch c.worker_infos[args.X].state {
 	case "Map":
-		c.mutex.Lock()
-		c.worker_state[args.X] = "Wait"
-		c.mutex.Unlock()
+		// c.wor[args.X] = "Wait"
+		c.worker_infos[args.X] = workerInfo{state: "Wait"}
 		reply.Y = 1
 	case "Reduce":
-		c.mutex.Lock()
-		c.worker_state[args.X] = "Finished"
-		c.mutex.Unlock()
+		// c.worker_state[args.X] = "Finished"
+		c.worker_infos[args.X] = workerInfo{state: "Finished"}
 		c.finished_reduce_num++
 		reply.Y = 1
 	default:
 		log.Fatalf("worker %v finish task error", args.X)
 	}
+	c.mutex.Unlock()
 	return nil
 }
 
@@ -134,24 +169,31 @@ func (c *Coordinator) Done() bool {
 }
 
 func checkMapFinished(c *Coordinator, running_worker *int) bool {
-	c.mutex.Lock()
-	for id, state := range c.worker_state {
-		if state == "Map" {
+	for id, info := range c.worker_infos {
+		if info.state == "Map" {
 			*running_worker = id
-			c.mutex.Unlock()
 			return false
 		}
 	}
-	c.mutex.Unlock()
 	return true
+}
+
+func checkReduceIfCrash(c *Coordinator, running_worker *int) bool {
+	for id, info := range c.worker_infos {
+		if info.state == "Reduce" && time.Since(info.last_tast_time) > 10*time.Second {
+			*running_worker = id
+			return true
+		}
+	}
+	return false
 }
 
 // create a Coordinator.
 // main/mrcoordinator.go calls this function.
 // nReduce is the number of reduce tasks to use.
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
-	c := Coordinator{input_files: files, worker_state: make(map[int]string), next_worker_id: 0, next_map_input: 0,
-		reduce_num: nReduce, next_reduce_id: 0, map_workers: make(map[int]bool), finished_reduce_num: 0}
+	c := Coordinator{input_files: files, worker_infos: make(map[int]workerInfo), next_worker_id: 0, next_map_input: 0,
+		reduce_num: nReduce, next_reduce_id: 0, finished_reduce_num: 0}
 
 	// Your code here.
 

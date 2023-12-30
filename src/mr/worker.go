@@ -12,6 +12,8 @@ import (
 	"time"
 )
 
+var retry_times = 10
+
 // Map functions return a slice of KeyValue.
 type KeyValue struct {
 	Key   string
@@ -66,6 +68,7 @@ func map_worker(reply *MapreduceReply, mapf func(string, string) []KeyValue, wor
 	if len(reply.FileName) != 1 {
 		log.Fatalf("Map task should have only one input file")
 	}
+	reduceNum := reply.ReduceNum
 	// load content
 	filename := reply.FileName[0]
 	file, err := os.Open(filename)
@@ -81,22 +84,50 @@ func map_worker(reply *MapreduceReply, mapf func(string, string) []KeyValue, wor
 	file.Close()
 
 	kva := mapf(filename, string(content))
+
+	tempFiles := make([]*os.File, reduceNum)
 	// save to different intermediate files based on keys
 	for _, kv := range kva {
-		intermediate_file_name := fmt.Sprintf("mr-%v-%v", worker_id, ihash(kv.Key)%10)
-		intermediate_file, err := os.OpenFile(intermediate_file_name, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if err != nil {
-			log.Fatalf("cannot open %v,err %v", intermediate_file_name, err)
+		reduce_id := ihash(kv.Key) % reduceNum
+		var tmp *os.File
+		if tmp = tempFiles[reduce_id]; tmp == nil {
+			tmp, err = os.CreateTemp("./", "maptemp")
+			if err != nil {
+				log.Fatalf("cannot create temp file,err %v", err)
+			}
+			defer os.Remove(tmp.Name())
+			// open in append mode
+			tmp_append, err := os.OpenFile(tmp.Name(), os.O_APPEND|os.O_WRONLY, 0644)
+			tmp.Close()
+			if err != nil {
+				log.Fatalf("cannot open temp file,err %v", err)
+			}
+			tempFiles[reduce_id] = tmp_append
+			defer tmp_append.Close()
 		}
+		tmp = tempFiles[reduce_id]
 
-		enc := json.NewEncoder(intermediate_file)
+		// intermediate_file_name := fmt.Sprintf("mr-%v-%v", worker_id, reduce_id)
+		// intermediate_file, err := os.OpenFile(intermediate_file_name, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		// if err != nil {
+		// 	log.Fatalf("cannot open %v,err %v", intermediate_file_name, err)
+		// }
+
+		enc := json.NewEncoder(tmp)
 		err = enc.Encode(&kv)
 		if err != nil {
 			log.Fatalf("cannot encode %v", kv)
 		}
 
-		intermediate_file.Close()
+		// intermediate_file.Close()
 
+	}
+
+	// atomically rename the temp
+	for reduceid, tmp := range tempFiles {
+		if tmp != nil {
+			os.Rename(tmp.Name(), fmt.Sprintf("mr-%v-%v", reply.MapId, reduceid))
+		}
 	}
 
 	// imform coordinator that this task is finished
@@ -107,7 +138,7 @@ func reduce_worker(reply *MapreduceReply, reducef func(string, []string) string,
 	reduce_id := reply.ReduceId
 	// find all the related intermediate files whose name ends with reduce_id
 	kva := []KeyValue{}
-	for i := range reply.MapWorkers {
+	for i := 0; i < reply.MapTaskNum; i++ {
 		filename := fmt.Sprintf("mr-%v-%v", i, reduce_id)
 		file, err := os.Open(filename)
 		if err == nil {
@@ -132,8 +163,13 @@ func reduce_worker(reply *MapreduceReply, reducef func(string, []string) string,
 	// sort the kva
 	sort.Sort(ByKey(kva))
 
-	oname := fmt.Sprintf("mr-out-%v", reduce_id)
-	ofile, _ := os.Create(oname)
+	temp, err := os.CreateTemp("./", "reducetemp")
+	if err != nil {
+		log.Fatalf("cannot create temp file,err %v", err)
+	}
+	defer temp.Close()
+	// oname := fmt.Sprintf("mr-out-%v", reduce_id)
+	// ofile, _ := os.Create(oname)
 
 	//
 	// call Reduce on each distinct key in kva[],
@@ -152,12 +188,19 @@ func reduce_worker(reply *MapreduceReply, reducef func(string, []string) string,
 		output := reducef(kva[i].Key, values)
 
 		// this is the correct format for each line of Reduce output.
-		fmt.Fprintf(ofile, "%v %v\n", kva[i].Key, output)
+		fmt.Fprintf(temp, "%v %v\n", kva[i].Key, output)
 
 		i = j
 	}
 
-	ofile.Close()
+	// ofile.Close()
+
+	// atomically rename temp file to oname
+	oname := fmt.Sprintf("mr-out-%v", reduce_id)
+	err = os.Rename(temp.Name(), oname)
+	if err != nil {
+		log.Fatalf("cannot rename temp file,err %v", err)
+	}
 
 	// imform coordinator that this task is finished
 	CallFinishTask(worker_id)
@@ -194,20 +237,29 @@ func CallExample() {
 func CallAskForTask(worker_id int, reply *MapreduceReply) {
 	args := MapreduceArgs{worker_id}
 
-	ok := call("Coordinator.AskForTask", &args, &reply)
-	if !ok {
-		log.Fatalf("disconnct with coordinator\n")
+	for i := 0; i < retry_times; i++ {
+		ok := call("Coordinator.AskForTask", &args, &reply)
+		if ok {
+			return
+		}
+		log.Printf("ask for task failed, retry %v\n", i)
 	}
+	log.Fatalf("disconnct with coordinator\n")
 }
 
 func CallFinishTask(worker_id int) {
 	args := ExampleArgs{worker_id}
 	reply := ExampleReply{}
 
-	ok := call("Coordinator.FinishTask", &args, &reply)
-	if !ok {
-		fmt.Printf("call failed!\n")
+	for i := 0; i < retry_times; i++ {
+		ok := call("Coordinator.FinishTask", &args, &reply)
+		if ok {
+			// log.Printf("finish task %v,%v time\n", worker_id,i)
+			return
+		}
+		log.Printf("finish task failed, retry %v\n", i)
 	}
+	log.Fatalf("call finished failed!\n\n")
 }
 
 // send an RPC request to the coordinator, wait for the response.
