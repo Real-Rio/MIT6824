@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-var retry_times = 10
+var retry_times = 3
 
 // Map functions return a slice of KeyValue.
 type KeyValue struct {
@@ -58,19 +58,12 @@ func Worker(mapf func(string, string) []KeyValue,
 
 		}
 	}
-
-	// uncomment to send the Example RPC to the coordinator.
-	// CallExample()
-
 }
 
 func map_worker(reply *MapreduceReply, mapf func(string, string) []KeyValue, worker_id int) {
-	if len(reply.FileName) != 1 {
-		log.Fatalf("Map task should have only one input file")
-	}
 	reduceNum := reply.ReduceNum
 	// load content
-	filename := reply.FileName[0]
+	filename := reply.MapFile
 	file, err := os.Open(filename)
 	if err != nil {
 		log.Fatalf("cannot open %v, err %v", filename, err)
@@ -107,20 +100,11 @@ func map_worker(reply *MapreduceReply, mapf func(string, string) []KeyValue, wor
 		}
 		tmp = tempFiles[reduce_id]
 
-		// intermediate_file_name := fmt.Sprintf("mr-%v-%v", worker_id, reduce_id)
-		// intermediate_file, err := os.OpenFile(intermediate_file_name, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		// if err != nil {
-		// 	log.Fatalf("cannot open %v,err %v", intermediate_file_name, err)
-		// }
-
 		enc := json.NewEncoder(tmp)
 		err = enc.Encode(&kv)
 		if err != nil {
 			log.Fatalf("cannot encode %v", kv)
 		}
-
-		// intermediate_file.Close()
-
 	}
 
 	// atomically rename the temp
@@ -168,13 +152,7 @@ func reduce_worker(reply *MapreduceReply, reducef func(string, []string) string,
 		log.Fatalf("cannot create temp file,err %v", err)
 	}
 	defer temp.Close()
-	// oname := fmt.Sprintf("mr-out-%v", reduce_id)
-	// ofile, _ := os.Create(oname)
 
-	//
-	// call Reduce on each distinct key in kva[],
-	// and print the result to mr-out-0.
-	//
 	i := 0
 	for i < len(kva) {
 		j := i + 1
@@ -192,8 +170,6 @@ func reduce_worker(reply *MapreduceReply, reducef func(string, []string) string,
 
 		i = j
 	}
-
-	// ofile.Close()
 
 	// atomically rename temp file to oname
 	oname := fmt.Sprintf("mr-out-%v", reduce_id)
@@ -254,7 +230,6 @@ func CallFinishTask(worker_id int) {
 	for i := 0; i < retry_times; i++ {
 		ok := call("Coordinator.FinishTask", &args, &reply)
 		if ok {
-			// log.Printf("finish task %v,%v time\n", worker_id,i)
 			return
 		}
 		log.Printf("finish task failed, retry %v\n", i)

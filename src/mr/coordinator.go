@@ -11,11 +11,9 @@ import (
 )
 
 type Coordinator struct {
-	input_files []string
-	// worker_state        map[int]string // "Map" "Reduce" "Wait" "Finished"
-	next_worker_id int // every worker has a unique id
-	next_map_input int
-	// map_workers         map[int]bool // map worker id
+	input_files         []string
+	next_worker_id      int // every worker has a unique id
+	next_map_input      int
 	worker_infos        map[int]workerInfo
 	finished_reduce_num int // number of finished reduce task
 	reduce_num          int
@@ -24,11 +22,11 @@ type Coordinator struct {
 }
 
 type workerInfo struct {
-	last_tast_time   time.Time
-	last_input_files []string
-	state            string // "Map" "Reduce" "Wait" "Finished"
-	reduce_id        int
-	map_id           int
+	last_tast_time      time.Time
+	last_map_input_file string
+	state               string // "Map" "Reduce" "Wait" "Finished"
+	reduce_id           int
+	map_id              int
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -58,11 +56,10 @@ func (c *Coordinator) AskForTask(args *MapreduceArgs, reply *MapreduceReply) err
 	if c.next_map_input < len(c.input_files) {
 		reply.TaskType = "Map"
 		reply.WorkerId = args.WorkerId
-		reply.FileName = c.input_files[c.next_map_input : c.next_map_input+1]
+		reply.MapFile = c.input_files[c.next_map_input]
 		reply.ReduceNum = c.reduce_num
 		reply.MapId = c.next_map_input
-		c.worker_infos[args.WorkerId] = workerInfo{last_tast_time: time.Now(), last_input_files: reply.FileName, state: "Map", map_id: c.next_map_input}
-		// c.map_workers[args.WorkerId] = true
+		c.worker_infos[args.WorkerId] = workerInfo{last_tast_time: time.Now(), last_map_input_file: reply.MapFile, state: "Map", map_id: c.next_map_input}
 		c.next_map_input++
 		c.mutex.Unlock()
 		return nil
@@ -75,12 +72,11 @@ func (c *Coordinator) AskForTask(args *MapreduceArgs, reply *MapreduceReply) err
 		if time.Since(c.worker_infos[running_worker].last_tast_time) > 10*time.Second {
 			reply.TaskType = "Map"
 			reply.WorkerId = args.WorkerId
-			reply.FileName = c.worker_infos[running_worker].last_input_files
+			reply.MapFile = c.worker_infos[running_worker].last_map_input_file
 			reply.ReduceNum = c.reduce_num
 			reply.MapId = c.worker_infos[running_worker].map_id
-			c.worker_infos[args.WorkerId] = workerInfo{last_tast_time: time.Now(), last_input_files: reply.FileName, state: "Map"}
-			// c.map_workers[args.WorkerId] = true
-			// delete(c.map_workers, running_worker)
+			c.worker_infos[args.WorkerId] = workerInfo{last_tast_time: time.Now(), last_map_input_file: reply.MapFile, state: "Map", map_id: reply.MapId}
+
 			delete(c.worker_infos, running_worker)
 		} else {
 			reply.TaskType = "Wait"
@@ -96,11 +92,7 @@ func (c *Coordinator) AskForTask(args *MapreduceArgs, reply *MapreduceReply) err
 		reply.ReduceId = c.next_reduce_id
 		reply.WorkerId = args.WorkerId
 		reply.MapTaskNum = len(c.input_files)
-		// for key := range c.map_workers {
-		// 	reply.MapWorkers = append(reply.MapWorkers, key)
-		// }
 		c.next_reduce_id++
-		// c.worker_state[args.WorkerId] = "Reduce"
 		c.worker_infos[args.WorkerId] = workerInfo{last_tast_time: time.Now(), state: "Reduce", reduce_id: reply.ReduceId}
 		c.mutex.Unlock()
 		return nil
@@ -113,9 +105,6 @@ func (c *Coordinator) AskForTask(args *MapreduceArgs, reply *MapreduceReply) err
 		reply.ReduceId = c.worker_infos[crash_reduce_worker].reduce_id
 		reply.WorkerId = args.WorkerId
 		reply.MapTaskNum = len(c.input_files)
-		// for key := range c.map_workers {
-		// 	reply.MapWorkers = append(reply.MapWorkers, key)
-		// }
 		c.worker_infos[args.WorkerId] = workerInfo{last_tast_time: time.Now(), state: "Reduce", reduce_id: reply.ReduceId}
 		delete(c.worker_infos, crash_reduce_worker)
 		c.mutex.Unlock()
@@ -128,19 +117,14 @@ func (c *Coordinator) AskForTask(args *MapreduceArgs, reply *MapreduceReply) err
 	return nil
 }
 
-// TODO success: reply.Y = 1 fail: reply.Y = 0
 func (c *Coordinator) FinishTask(args *ExampleArgs, reply *ExampleReply) error {
 	c.mutex.Lock()
 	switch c.worker_infos[args.X].state {
 	case "Map":
-		// c.wor[args.X] = "Wait"
 		c.worker_infos[args.X] = workerInfo{state: "Wait"}
-		reply.Y = 1
 	case "Reduce":
-		// c.worker_state[args.X] = "Finished"
 		c.worker_infos[args.X] = workerInfo{state: "Finished"}
 		c.finished_reduce_num++
-		reply.Y = 1
 	default:
 		log.Fatalf("worker %v finish task error", args.X)
 	}

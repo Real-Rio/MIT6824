@@ -30,7 +30,7 @@ type MapreduceArgs struct {
 
 type MapreduceReply struct {
 	TaskType string
-	FileName []string
+	MapFile  string
 	WorkerId int
 	ReduceId int // unique id given to each reduce task
 	MapId    int // unique id given to each map task
