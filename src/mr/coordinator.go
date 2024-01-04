@@ -143,7 +143,7 @@ func (c *Coordinator) server() {
 	if e != nil {
 		log.Fatal("listen error:", e)
 	}
-	go http.Serve(l, nil)
+	go http.Serve(l, nil) // 并发调用
 }
 
 // main/mrcoordinator.go calls Done() periodically to find out
