@@ -80,8 +80,8 @@ type Raft struct {
 
 	state int // 0: follower, 1: candidate, 2: leader
 	// isLeader bool
-	hasRecvMsgFromLeader bool // indicate whether receive msg from leader before timeout,need to reset TODO:只有leader的消息才算
-
+	hasRecvAE bool // receive AppendEntries RPC from current leader
+	hasVoted bool // vote to probale future leader
 }
 
 type LogEntry struct {
@@ -193,14 +193,13 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.currentTerm = args.Term
 		rf.state = FOLLOWER
 		rf.votedFor = -1
-		rf.hasRecvMsgFromLeader = true
 	}
 
 	if (rf.votedFor == -1 || rf.votedFor == args.CandidateId) && rf.logCheck(args) {
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = true
-		rf.hasRecvMsgFromLeader = true
 		rf.votedFor = args.CandidateId
+		rf.hasVoted = true
 		rf.state = FOLLOWER
 		DPrintf("server %d(%d) vote for %d(%d)\n", rf.me, rf.currentTerm, args.CandidateId, args.Term)
 		return
@@ -235,7 +234,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.votedFor = -1
 		rf.state = FOLLOWER
 	}
-	rf.hasRecvMsgFromLeader = true
+	rf.hasRecvAE = true
 	// 2
 	if len(rf.log) < args.PrevLogIndex+1 || rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
 		reply.Term = rf.currentTerm
@@ -294,7 +293,6 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 func (rf *Raft) startElection() {
 	rf.mu.Lock()
 	rf.currentTerm++
-	rf.hasRecvMsgFromLeader = true
 	rf.votedFor = rf.me
 	rf.state = CANDIDATE
 	resCh := make(chan RequestVoteReply) // channel to receive vote result
@@ -330,7 +328,6 @@ func (rf *Raft) startElection() {
 			rf.currentTerm = reply.Term
 			rf.votedFor = -1
 			rf.state = FOLLOWER
-			rf.hasRecvMsgFromLeader = true
 			rf.mu.Unlock()
 			return
 		}
@@ -373,7 +370,6 @@ func (rf *Raft) sendHeartbeat() {
 					rf.currentTerm = reply.Term
 					rf.votedFor = -1
 					rf.state = FOLLOWER
-					rf.hasRecvMsgFromLeader = true
 					return
 				}
 			}(i, rf.currentTerm, rf.me, len(rf.log)-1, rf.log[len(rf.log)-1].Term, rf.commitIndex)
@@ -429,7 +425,7 @@ func (rf *Raft) ticker() {
 		// Check if a leader election should be started.
 		rf.mu.Lock()
 		// without receiving AppendEntries RPC from current leader or granting vote to candidate(which should be different from current leader)
-		if rf.state == FOLLOWER && !rf.hasRecvMsgFromLeader && (rf.votedFor == -1 || rf.votedFor == rf.currentTerm) { // TODO什么时候重传
+		if rf.state == FOLLOWER && !rf.hasRecvAE && (rf.votedFor == -1 || !rf.hasVoted) { // TODO什么时候重传
 			rf.state = CANDIDATE
 			go rf.startElection()
 		} else if rf.state == CANDIDATE {
@@ -437,8 +433,8 @@ func (rf *Raft) ticker() {
 		}
 
 		// reset
-		rf.hasRecvMsgFromLeader = false
-
+		rf.hasRecvAE = false
+		rf.hasVoted = false
 		rf.mu.Unlock()
 
 		// pause for a random amount of time between 50 and 350
@@ -486,7 +482,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// Your initialization code here (2A, 2B, 2C).
 	rf.state = FOLLOWER
-	rf.hasRecvMsgFromLeader = false
+	rf.hasRecvAE = false
 	rf.votedFor = -1
 	rf.log = append(rf.log, LogEntry{0})
 	// initialize from state persisted before a crash
