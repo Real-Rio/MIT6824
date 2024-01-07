@@ -20,6 +20,7 @@ import "sync"
 const RaftElectionTimeout = 1000 * time.Millisecond
 
 func TestInitialElection2A(t *testing.T) {
+	Init()
 	servers := 3
 	cfg := make_config(t, servers, false, false)
 	defer cfg.cleanup()
@@ -50,7 +51,9 @@ func TestInitialElection2A(t *testing.T) {
 	cfg.end()
 }
 
+
 func TestReElection2A(t *testing.T) {
+	Init()
 	servers := 3
 	cfg := make_config(t, servers, false, false)
 	defer cfg.cleanup()
@@ -91,6 +94,7 @@ func TestReElection2A(t *testing.T) {
 }
 
 func TestManyElections2A(t *testing.T) {
+	Init()
 	servers := 7
 	cfg := make_config(t, servers, false, false)
 	defer cfg.cleanup()
@@ -124,6 +128,7 @@ func TestManyElections2A(t *testing.T) {
 }
 
 func TestBasicAgree2B(t *testing.T) {
+	Init()
 	servers := 3
 	cfg := make_config(t, servers, false, false)
 	defer cfg.cleanup()
@@ -301,6 +306,7 @@ func TestFailAgree2B(t *testing.T) {
 }
 
 func TestFailNoAgree2B(t *testing.T) {
+	Init()
 	servers := 5
 	cfg := make_config(t, servers, false, false)
 	defer cfg.cleanup()
@@ -453,6 +459,7 @@ loop:
 }
 
 func TestRejoin2B(t *testing.T) {
+	Init()
 	servers := 3
 	cfg := make_config(t, servers, false, false)
 	defer cfg.cleanup()
