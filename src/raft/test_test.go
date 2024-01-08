@@ -895,6 +895,7 @@ func TestUnreliableAgree2C(t *testing.T) {
 }
 
 func TestFigure8Unreliable2C(t *testing.T) {
+	Init()
 	servers := 5
 	cfg := make_config(t, servers, true, false)
 	defer cfg.cleanup()
