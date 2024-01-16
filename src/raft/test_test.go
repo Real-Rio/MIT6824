@@ -1170,6 +1170,7 @@ func snapcommon(t *testing.T, name string, disconnect bool, reliable bool, crash
 }
 
 func TestSnapshotBasic2D(t *testing.T) {
+	Init()
 	snapcommon(t, "Test (2D): snapshots basic", false, true, false)
 }
 
@@ -1183,10 +1184,12 @@ func TestSnapshotInstallUnreliable2D(t *testing.T) {
 }
 
 func TestSnapshotInstallCrash2D(t *testing.T) {
+	Init()
 	snapcommon(t, "Test (2D): install snapshots (crash)", false, true, true)
 }
 
 func TestSnapshotInstallUnCrash2D(t *testing.T) {
+	Init()
 	snapcommon(t, "Test (2D): install snapshots (unreliable+crash)", false, false, true)
 }
 
