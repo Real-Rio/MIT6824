@@ -199,7 +199,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	copy(newLog, rf.log[index-rf.lastIncludeIndex:])
 	rf.log = newLog
 	// rf.log = rf.log[index-rf.beginIndex:]
-	rf.log[0].Command = nil
+	// rf.log[0].Command = nil
 	rf.snapshot = snapshot
 	rf.lastIncludeIndex = index
 	Debug(dSnap, "S%d snapshot done,lastIncludeIndex is %d\n", rf.me, rf.lastIncludeIndex)
@@ -288,7 +288,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
-	Debug(dLog, "S%d receive append entries from S%d at T%d,len(%d)\n", rf.me, args.LeaderId, rf.currentTerm, len(args.Entries))
+	Debug(dLog, "S%d receive append entries from S%d at T%d,len(%d) curlen(%d)\n", rf.me, args.LeaderId, rf.currentTerm, len(args.Entries), len(rf.log))
 	defer rf.mu.Unlock()
 	// 1
 	if args.Term < rf.currentTerm {
@@ -324,7 +324,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				break
 			}
 		}
-		rf.log = rf.log[:args.PrevLogIndex-rf.lastIncludeIndex]
+		newLog := make([]LogEntry, len(rf.log[:args.PrevLogIndex-rf.lastIncludeIndex]))
+		copy(newLog, rf.log[:args.PrevLogIndex-rf.lastIncludeIndex])
+		rf.log = newLog
+		if len(rf.log) == 0 {
+			rf.log = append(rf.log, LogEntry{rf.lastIncludeTerm, rf.lastIncludeIndex, nil})
+		}
 		Debug(dLog, "S%d refuse append entries from S%d,mismatch2\n", rf.me, args.LeaderId)
 		return
 	}
@@ -354,13 +359,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 }
 
 func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
-	Debug(dSnap, "S%d receive snapshot from S%d at T%d lastIndex %d\n", rf.me, args.LeaderId, rf.currentTerm, args.LastIncludedIndex)
 	rf.mu.Lock()
+	Debug(dSnap, "S%d receive snapshot from S%d at T%d lastIndex %d\n", rf.me, args.LeaderId, rf.currentTerm, args.LastIncludedIndex)
 	defer rf.mu.Unlock()
 	reply.Term = rf.currentTerm
 
 	// 1
-	if args.Term < rf.currentTerm || args.LastIncludedIndex <= rf.lastIncludeIndex {
+	if args.Term < rf.currentTerm {
 		Debug(dSnap, "S%d (T%d)receive snapshot from S%d (T%d)but refuse\n", rf.me, rf.currentTerm, args.LeaderId, args.Term)
 		return
 	}
@@ -374,36 +379,26 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	rf.state = FOLLOWER
 	rf.resetTimer()
 
-	if args.LastIncludedIndex <= rf.commitIndex {
+	if args.LastIncludedIndex <= rf.commitIndex || args.LastIncludedIndex <= rf.lastIncludeIndex {
+		Debug(dSnap, "S%d refuse snapshot from S%d,lastIncludedIndex %d,commitIndex %d,lastIncludeIndex %d\n", rf.me, args.LeaderId, args.LastIncludedIndex, rf.commitIndex, rf.lastIncludeIndex)
 		return
 	}
 
-	rf.lastIncludeTerm = args.LastIncludedTerm
-	if args.LastIncludedIndex >= rf.lastIncludeIndex && args.LastIncludedIndex <= rf.getLastLog().Index {
-		rf.log = rf.log[args.LastIncludedIndex-rf.lastIncludeIndex:]
-		rf.log[0].Command = nil
+	if args.LastIncludedIndex <= rf.getLastLog().Index {
+		newLog := make([]LogEntry, len(rf.log[args.LastIncludedIndex-rf.lastIncludeIndex:]))
+		copy(newLog, rf.log[args.LastIncludedIndex-rf.lastIncludeIndex:])
+		rf.log = newLog
+		// rf.log[0].Command = nil
 	} else {
 		rf.log = []LogEntry{{args.LastIncludedTerm, args.LastIncludedIndex, nil}}
 	}
+	Debug(dWarn, "S%d log length is %d\n", rf.me, len(rf.log))
 	rf.lastIncludeIndex = args.LastIncludedIndex
+	rf.lastIncludeTerm = args.LastIncludedTerm
 	rf.snapshot = args.Data
 	rf.persist()
 
 	go rf.applySnapshot(args.LastIncludedIndex, args.LastIncludedTerm, args.Data)
-
-	// go func() {
-	// 	rf.mu.Lock()
-	// 	rf.lastApplied = args.LastIncludedIndex
-	// 	rf.commitIndex = args.LastIncludedIndex
-	// 	rf.mu.Unlock()
-	// 	rf.applyCh <- ApplyMsg{
-	// 		SnapshotValid: true,
-	// 		Snapshot:      args.Data,
-	// 		SnapshotTerm:  args.LastIncludedTerm,
-	// 		SnapshotIndex: args.LastIncludedIndex,
-	// 	}
-	// }()
-
 }
 
 /*******************************************************************************************
@@ -675,6 +670,8 @@ func (rf *Raft) handleInstallSnapshotResponse(peer int, requeset *InstallSnapsho
 	if response.Term < rf.currentTerm || rf.state != LEADER {
 		return
 	}
+	rf.nextIndex[peer] = requeset.LastIncludedIndex + 1
+	rf.matchIndex[peer] = rf.nextIndex[peer] - 1
 
 }
 
@@ -774,7 +771,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := rf.state == LEADER
 
 	if isLeader {
-		Debug(dClient, "S%d receive command %v,index %d at T%d\n", rf.me, command, index, rf.currentTerm)
+		Debug(dClient, "S%d receive command %v,index %d lastIncludeIndex %d(log len%d) at T%d\n", rf.me, command, index, rf.lastIncludeIndex, len(rf.log), rf.currentTerm)
 		rf.log = append(rf.log, LogEntry{term, index, command})
 		rf.persist()
 		go rf.leaderBroadCast(false)
