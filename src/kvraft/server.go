@@ -1,32 +1,40 @@
 package kvraft
 
 import (
-	"log"
+	// "log"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"MIT6824/labgob"
 	"MIT6824/labrpc"
 	"MIT6824/raft"
 )
 
-const Debug = false
+// const Debug = false
 
-func DPrintf(format string, a ...interface{}) (n int, err error) {
-	if Debug {
-		log.Printf(format, a...)
-	}
-	return
-}
+// func DPrintf(format string, a ...interface{}) (n int, err error) {
+// 	if Debug {
+// 		log.Printf(format, a...)
+// 	}
+// 	return
+// }
 
 type Op struct {
-	// Your definitions here.
-	// Field names must start with capital letters,
-	// otherwise RPC will break.
+	Operation string // "Put" "Append" "Get"
+	ClientID  int64
+	MsgID     int
+	Key       string
+	Value     string
+}
+
+type executeResult struct {
+	err   Err
+	value string
 }
 
 type KVServer struct {
-	mu      sync.Mutex
+	mu      sync.RWMutex
 	me      int
 	rf      *raft.Raft
 	applyCh chan raft.ApplyMsg
@@ -34,15 +42,114 @@ type KVServer struct {
 
 	maxraftstate int // snapshot if log grows this big
 
-	// Your definitions here.
+	notifyChan map[int]chan executeResult
+
+	kvStore map[string]string // key-value store
+	lastEx  map[int64]int     // clientID -> last executed messageID
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
-	// Your code here.
+	command := Op{Operation: "Get", ClientID: args.ClientID, MsgID: args.MsgID, Key: args.Key}
+	index, _, isLeader := kv.rf.Start(command)
+	if !isLeader {
+		Debug(dWarn, "S%d get not leader",kv.me)
+		reply.Err = ErrWrongLeader
+		reply.Value = ""
+		return
+	}
+	Debug(dServer, "S%d Receive Get %s,index %d",kv.me, args.Key, index)
+
+	kv.mu.Lock()
+	kv.notifyChan[index] = make(chan executeResult, 1)
+	kv.mu.Unlock()
+
+	select {
+	case res := <-kv.notifyChan[index]:
+		if res.err == ErrNoKey {
+			Debug(dWarn, "No key")
+			reply.Err = ErrNoKey
+		} else {
+			Debug(dWarn, "S%d Get success",kv.me)
+			reply.Err = OK
+			reply.Value = res.value
+		}
+		kv.mu.Lock()
+		close(kv.notifyChan[index])
+		delete(kv.notifyChan, index)
+		kv.mu.Unlock()
+	case <-time.After(1000 * time.Millisecond):
+		Debug(dWarn, "S%d get Timeout",kv.me)
+		reply.Err = TimeOut
+	}
+
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
-	// Your code here.
+	command := Op{Operation: args.Op, ClientID: args.ClientID, MsgID: args.MsgID, Key: args.Key, Value: args.Value}
+	index, _, isLeader := kv.rf.Start(command)
+	if !isLeader {
+		Debug(dWarn, "S%d PutAppend not leader",kv.me)
+		reply.Err = ErrWrongLeader
+		return
+	}
+
+	Debug(dServer, "S%d Receive PutAppend %s %s,index %d",kv.me, args.Key, args.Value, index)
+
+	kv.mu.Lock()
+	kv.notifyChan[index] = make(chan executeResult, 1)
+	kv.mu.Unlock()
+
+	select {
+	case <-kv.notifyChan[index]:
+		Debug(dWarn, "S%d PutAppend success",kv.me)
+		reply.Err = OK
+	case <-time.After(1000 * time.Millisecond):
+		Debug(dWarn, "S%d put append Timeout",kv.me)
+		reply.Err = TimeOut
+	}
+}
+
+func (kv *KVServer) applyLoop() {
+	for apply := range kv.applyCh {
+		if kv.killed() {
+			return
+		}
+		if !apply.CommandValid {
+			continue
+		}
+
+		op := apply.Command.(Op)
+		clientID := op.ClientID
+		msgID := op.MsgID
+		executeResult := executeResult{}
+
+		kv.mu.Lock()
+		if op.Operation == "Put" && msgID > kv.lastEx[clientID] {
+			Debug(dLog, "S%d new put index:%d",kv.me, apply.CommandIndex)
+			kv.kvStore[op.Key] = op.Value
+			kv.lastEx[clientID] = msgID
+		} else if op.Operation == "Append" && msgID > kv.lastEx[clientID] {
+			Debug(dLog, "S%d new append index:%d",kv.me, apply.CommandIndex)
+			kv.kvStore[op.Key] += op.Value
+			kv.lastEx[clientID] = msgID
+		} else if op.Operation == "Get" {
+			Debug(dLog, "S%d new get index:%d",kv.me, apply.CommandIndex)
+			if _, ok := kv.kvStore[op.Key]; !ok {
+				executeResult.err = ErrNoKey
+			} else {
+				executeResult.value = kv.kvStore[op.Key]
+			}
+			if msgID > kv.lastEx[clientID] {
+				kv.lastEx[clientID] = msgID
+			}
+		}
+
+		// notify rpc handler
+		if _, ok := kv.notifyChan[apply.CommandIndex]; ok {
+			kv.notifyChan[apply.CommandIndex] <- executeResult
+		}
+		kv.mu.Unlock()
+	}
 }
 
 // the tester calls Kill() when a KVServer instance won't
@@ -91,6 +198,9 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	// You may need initialization code here.
-
+	kv.kvStore = make(map[string]string)
+	kv.notifyChan = make(map[int]chan executeResult)
+	kv.lastEx = make(map[int64]int)
+	go kv.applyLoop()
 	return kv
 }

@@ -556,6 +556,7 @@ func TestOnePartition3A(t *testing.T) {
 
 func TestManyPartitionsOneClient3A(t *testing.T) {
 	// Test: partitions, one client (3A) ...
+	Init()
 	GenericTest(t, "3A", 1, 5, false, false, true, -1, false)
 }
 
