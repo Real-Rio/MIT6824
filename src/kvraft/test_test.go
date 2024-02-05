@@ -480,6 +480,7 @@ func TestUnreliableOneKey3A(t *testing.T) {
 // doesn't go through until the partition heals.  The leader in the original
 // network ends up in the minority partition.
 func TestOnePartition3A(t *testing.T) {
+	Init()
 	const nservers = 5
 	cfg := make_config(t, nservers, false, -1)
 	defer cfg.cleanup()
@@ -571,6 +572,7 @@ func TestPersistOneClient3A(t *testing.T) {
 }
 
 func TestPersistConcurrent3A(t *testing.T) {
+	Init()
 	// Test: restarts, many clients (3A) ...
 	GenericTest(t, "3A", 5, 5, false, true, false, -1, false)
 }
@@ -694,11 +696,13 @@ func TestSpeed3B(t *testing.T) {
 }
 
 func TestSnapshotRecover3B(t *testing.T) {
+	Init()
 	// Test: restarts, snapshots, one client (3B) ...
 	GenericTest(t, "3B", 1, 5, false, true, false, 1000, false)
 }
 
 func TestSnapshotRecoverManyClients3B(t *testing.T) {
+	Init()
 	// Test: restarts, snapshots, many clients (3B) ...
 	GenericTest(t, "3B", 20, 5, false, true, false, 1000, false)
 }

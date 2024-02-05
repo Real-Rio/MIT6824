@@ -2,6 +2,7 @@ package kvraft
 
 import (
 	// "log"
+	"bytes"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -41,46 +42,51 @@ type KVServer struct {
 	dead    int32 // set by Kill()
 
 	maxraftstate int // snapshot if log grows this big
+	persister    *raft.Persister
 
-	notifyChan map[int]chan executeResult
+	NotifyChan map[int]chan executeResult
 
-	kvStore map[string]string // key-value store
-	lastEx  map[int64]int     // clientID -> last executed messageID
+	KVStore   map[string]string // key-value store
+	LastMsgID map[int64]int     // clientID -> last executed messageID
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	command := Op{Operation: "Get", ClientID: args.ClientID, MsgID: args.MsgID, Key: args.Key}
 	index, _, isLeader := kv.rf.Start(command)
 	if !isLeader {
-		Debug(dWarn, "S%d get not leader",kv.me)
+		Debug(dWarn, "S%d get not leader", kv.me)
 		reply.Err = ErrWrongLeader
 		reply.Value = ""
 		return
 	}
-	Debug(dServer, "S%d Receive Get %s,index %d",kv.me, args.Key, index)
+	Debug(dServer, "S%d Receive Get %s,index %d", kv.me, args.Key, index)
 
 	kv.mu.Lock()
-	kv.notifyChan[index] = make(chan executeResult, 1)
+	if kv.NotifyChan[index] == nil {
+		kv.NotifyChan[index] = make(chan executeResult, 1)
+	}
+	notifyChan := kv.NotifyChan[index]
 	kv.mu.Unlock()
 
 	select {
-	case res := <-kv.notifyChan[index]:
+	case res := <-notifyChan:
 		if res.err == ErrNoKey {
 			Debug(dWarn, "No key")
 			reply.Err = ErrNoKey
 		} else {
-			Debug(dWarn, "S%d Get success",kv.me)
+			Debug(dWarn, "S%d Get success", kv.me)
 			reply.Err = OK
 			reply.Value = res.value
 		}
-		kv.mu.Lock()
-		close(kv.notifyChan[index])
-		delete(kv.notifyChan, index)
-		kv.mu.Unlock()
-	case <-time.After(1000 * time.Millisecond):
-		Debug(dWarn, "S%d get Timeout",kv.me)
+
+	case <-time.After(500 * time.Millisecond):
+		Debug(dWarn, "S%d get Timeout", kv.me)
 		reply.Err = TimeOut
 	}
+	kv.mu.Lock()
+	close(kv.NotifyChan[index])
+	delete(kv.NotifyChan, index)
+	kv.mu.Unlock()
 
 }
 
@@ -88,25 +94,32 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	command := Op{Operation: args.Op, ClientID: args.ClientID, MsgID: args.MsgID, Key: args.Key, Value: args.Value}
 	index, _, isLeader := kv.rf.Start(command)
 	if !isLeader {
-		Debug(dWarn, "S%d PutAppend not leader",kv.me)
+		Debug(dWarn, "S%d PutAppend not leader", kv.me)
 		reply.Err = ErrWrongLeader
 		return
 	}
 
-	Debug(dServer, "S%d Receive PutAppend %s %s,index %d",kv.me, args.Key, args.Value, index)
+	Debug(dServer, "S%d Receive PutAppend %s %s,index %d", kv.me, args.Key, args.Value, index)
 
 	kv.mu.Lock()
-	kv.notifyChan[index] = make(chan executeResult, 1)
+	if kv.NotifyChan[index] == nil {
+		kv.NotifyChan[index] = make(chan executeResult, 1)
+	}
+	notifyChan := kv.NotifyChan[index]
 	kv.mu.Unlock()
 
 	select {
-	case <-kv.notifyChan[index]:
-		Debug(dWarn, "S%d PutAppend success",kv.me)
+	case <-notifyChan:
+		Debug(dWarn, "S%d PutAppend success", kv.me)
 		reply.Err = OK
-	case <-time.After(1000 * time.Millisecond):
-		Debug(dWarn, "S%d put append Timeout",kv.me)
+	case <-time.After(500 * time.Millisecond):
+		Debug(dWarn, "S%d put append Timeout", kv.me)
 		reply.Err = TimeOut
 	}
+	kv.mu.Lock()
+	close(kv.NotifyChan[index])
+	delete(kv.NotifyChan, index)
+	kv.mu.Unlock()
 }
 
 func (kv *KVServer) applyLoop() {
@@ -114,6 +127,25 @@ func (kv *KVServer) applyLoop() {
 		if kv.killed() {
 			return
 		}
+
+		if apply.SnapshotValid {
+			Debug(dSnap, "S%d restore snapshot", kv.me)
+			kv.mu.Lock()
+			r := bytes.NewBuffer(apply.Snapshot)
+			d := labgob.NewDecoder(r)
+			var kvStore map[string]string
+			var lastMsgID map[int64]int
+			// var notifyChan map[int]chan executeResult
+			if d.Decode(&kvStore) != nil || d.Decode(&lastMsgID) != nil {
+				Debug(dLog, "S%d decode snapshot error", kv.me)
+			} else {
+				kv.KVStore = kvStore
+				kv.LastMsgID = lastMsgID
+			}
+			kv.mu.Unlock()
+			continue
+		}
+
 		if !apply.CommandValid {
 			continue
 		}
@@ -124,31 +156,68 @@ func (kv *KVServer) applyLoop() {
 		executeResult := executeResult{}
 
 		kv.mu.Lock()
-		if op.Operation == "Put" && msgID > kv.lastEx[clientID] {
-			Debug(dLog, "S%d new put index:%d",kv.me, apply.CommandIndex)
-			kv.kvStore[op.Key] = op.Value
-			kv.lastEx[clientID] = msgID
-		} else if op.Operation == "Append" && msgID > kv.lastEx[clientID] {
-			Debug(dLog, "S%d new append index:%d",kv.me, apply.CommandIndex)
-			kv.kvStore[op.Key] += op.Value
-			kv.lastEx[clientID] = msgID
+		if op.Operation == "Put" && msgID > kv.LastMsgID[clientID] {
+			Debug(dLog, "S%d new put index:%d", kv.me, apply.CommandIndex)
+			kv.KVStore[op.Key] = op.Value
+			kv.LastMsgID[clientID] = msgID
+		} else if op.Operation == "Append" && msgID > kv.LastMsgID[clientID] {
+			Debug(dLog, "S%d new append index:%d", kv.me, apply.CommandIndex)
+			kv.KVStore[op.Key] += op.Value
+			kv.LastMsgID[clientID] = msgID
 		} else if op.Operation == "Get" {
-			Debug(dLog, "S%d new get index:%d",kv.me, apply.CommandIndex)
-			if _, ok := kv.kvStore[op.Key]; !ok {
+			Debug(dLog, "S%d new get index:%d", kv.me, apply.CommandIndex)
+			if _, ok := kv.KVStore[op.Key]; !ok {
 				executeResult.err = ErrNoKey
 			} else {
-				executeResult.value = kv.kvStore[op.Key]
+				executeResult.value = kv.KVStore[op.Key]
 			}
-			if msgID > kv.lastEx[clientID] {
-				kv.lastEx[clientID] = msgID
+			if msgID > kv.LastMsgID[clientID] {
+				kv.LastMsgID[clientID] = msgID
 			}
 		}
 
+		term, isLeader := kv.rf.GetState()
+
 		// notify rpc handler
-		if _, ok := kv.notifyChan[apply.CommandIndex]; ok {
-			kv.notifyChan[apply.CommandIndex] <- executeResult
+		if _, ok := kv.NotifyChan[apply.CommandIndex]; ok && isLeader && term == apply.CommandTerm {
+			kv.NotifyChan[apply.CommandIndex] <- executeResult
 		}
 		kv.mu.Unlock()
+
+		// snapshot
+		if kv.maxraftstate != -1 && kv.persister.RaftStateSize() > kv.maxraftstate {
+			kv.saveSnap(apply.CommandIndex)
+		}
+	}
+}
+
+func (kv *KVServer) saveSnap(index int) {
+	Debug(dSnap, "S%d save snapshot", kv.me)
+	kv.mu.RLock()
+	defer kv.mu.RUnlock()
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(kv.KVStore)
+	e.Encode(kv.LastMsgID)
+	data := w.Bytes()
+	kv.rf.Snapshot(index, data)
+}
+
+func (kv *KVServer) readSnapshot(data []byte) {
+	Debug(dSnap, "S%d read snapshot", kv.me)
+	if data == nil || len(data) < 1 {
+		return
+	}
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var kvStore map[string]string
+	var lastMsgID map[int64]int
+	// var notifyChan map[int]chan executeResult
+	if d.Decode(&kvStore) != nil || d.Decode(&lastMsgID) != nil {
+		Debug(dLog, "S%d decode snapshot error", kv.me)
+	} else {
+		kv.KVStore = kvStore
+		kv.LastMsgID = lastMsgID
 	}
 }
 
@@ -195,12 +264,15 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	// You may need initialization code here.
 
 	kv.applyCh = make(chan raft.ApplyMsg)
-	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
-
+	kv.persister = persister
 	// You may need initialization code here.
-	kv.kvStore = make(map[string]string)
-	kv.notifyChan = make(map[int]chan executeResult)
-	kv.lastEx = make(map[int64]int)
+	kv.KVStore = make(map[string]string)
+	kv.NotifyChan = make(map[int]chan executeResult)
+	kv.LastMsgID = make(map[int64]int)
+	// restore snapshot
+	kv.readSnapshot(persister.ReadSnapshot())
+
 	go kv.applyLoop()
+	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 	return kv
 }

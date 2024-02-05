@@ -46,7 +46,8 @@ type ApplyMsg struct {
 	CommandValid bool
 	Command      interface{}
 	CommandIndex int
-
+	CommandTerm  int
+	// IfLeader     bool
 	// For 2D:
 	SnapshotValid bool
 	Snapshot      []byte
@@ -175,7 +176,8 @@ func (rf *Raft) readPersist(data []byte, snapshotData []byte) {
 	if len(snapshotData) > 0 && rf.lastIncludeIndex > 0 {
 		rf.snapshot = snapshotData
 		rf.lastApplied = rf.lastIncludeIndex
-		go rf.applySnapshot(lastIncludeIndex, lastIncludeTerm, snapshotData)
+		rf.applyCond.Signal()
+		// go rf.applySnapshot(lastIncludeIndex, lastIncludeTerm, snapshotData)
 	}
 
 }
@@ -288,8 +290,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
-	Debug(dLog, "S%d receive append entries from S%d at T%d,len(%d) curlen(%d)\n", rf.me, args.LeaderId, rf.currentTerm, len(args.Entries), len(rf.log))
 	defer rf.mu.Unlock()
+	Debug(dLog, "S%d receive append entries from S%d at T%d,len(%d) curlen(%d)\n", rf.me, args.LeaderId, rf.currentTerm, len(args.Entries), len(rf.log))
 	// 1
 	if args.Term < rf.currentTerm {
 		Debug(dWarn, "S%d (T%d)receive append entries from S%d (T%d)but refuse\n", rf.me, rf.currentTerm, args.LeaderId, args.Term)
@@ -360,8 +362,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
 	rf.mu.Lock()
-	Debug(dSnap, "S%d receive snapshot from S%d at T%d lastIndex %d\n", rf.me, args.LeaderId, rf.currentTerm, args.LastIncludedIndex)
 	defer rf.mu.Unlock()
+	Debug(dSnap, "S%d receive snapshot from S%d at T%d lastIndex %d\n", rf.me, args.LeaderId, rf.currentTerm, args.LastIncludedIndex)
 	reply.Term = rf.currentTerm
 
 	// 1
@@ -398,7 +400,8 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	rf.snapshot = args.Data
 	rf.persist()
 
-	go rf.applySnapshot(args.LastIncludedIndex, args.LastIncludedTerm, args.Data)
+	rf.applyCond.Signal()
+	// go rf.applySnapshot(args.LastIncludedIndex, args.LastIncludedTerm, args.Data)
 }
 
 /*******************************************************************************************
@@ -434,7 +437,7 @@ func (rf *Raft) getFirstLog() LogEntry {
 	return rf.log[0]
 }
 
-// TODO:存储快照后，log 长度为 0，需不需要加入一个空白 entry
+
 func (rf *Raft) getLastLog() LogEntry {
 	if len(rf.log) == 0 {
 		Debug(dWarn, "S%d log length is 0\n", rf.me)
@@ -471,20 +474,19 @@ func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply
 	return ok
 }
 
-// TODO: snapshot格式有问题
-func (rf *Raft) applySnapshot(lastIncludeIndex int, lastIncludeTerm int, snapshot []byte) {
-	rf.mu.Lock()
-	Debug(dSnap, "S%d apply snapshot,prevIndex is %d\n", rf.me, lastIncludeIndex)
-	rf.lastApplied = lastIncludeIndex
-	rf.commitIndex = lastIncludeIndex // TODO:不一定留
-	rf.mu.Unlock()
-	rf.applyCh <- ApplyMsg{
-		SnapshotValid: true,
-		Snapshot:      snapshot,
-		SnapshotTerm:  lastIncludeTerm,
-		SnapshotIndex: lastIncludeIndex,
-	}
-}
+// func (rf *Raft) applySnapshot(lastIncludeIndex int, lastIncludeTerm int, snapshot []byte) {
+// 	rf.mu.Lock()
+// 	Debug(dSnap, "S%d apply snapshot,prevIndex is %d\n", rf.me, lastIncludeIndex)
+// 	rf.lastApplied = lastIncludeIndex
+// 	rf.commitIndex = lastIncludeIndex // TODO:不一定留
+// 	rf.mu.Unlock()
+// 	rf.applyCh <- ApplyMsg{
+// 		SnapshotValid: true,
+// 		Snapshot:      snapshot,
+// 		// SnapshotTerm:  lastIncludeTerm,
+// 		SnapshotIndex: lastIncludeIndex,
+// 	}
+// }
 
 /*
 * Election
@@ -791,15 +793,34 @@ func (rf *Raft) applier() {
 		}
 
 		rf.mu.Lock()
+		// 优先判断有没有 snapshot 要 apply
+		if len(rf.snapshot) > 0 && rf.lastIncludeIndex > rf.lastApplied {
+			Debug(dSnap, "S%d apply snapshot at T%d\n", rf.me, rf.currentTerm)
+			rf.lastApplied = rf.lastIncludeIndex
+			if rf.commitIndex < rf.lastIncludeIndex {
+				rf.commitIndex = rf.lastIncludeIndex
+			}
+			rf.mu.Unlock()
+
+			rf.applyCh <- ApplyMsg{
+				SnapshotValid: true,
+				Snapshot:      rf.snapshot,
+				// SnapshotTerm:  lastIncludeTerm,
+				SnapshotIndex: rf.lastIncludeIndex,
+			}
+			rf.mu.Lock()
+		}
+
 		for rf.commitIndex > rf.lastApplied && rf.lastApplied+1 > rf.lastIncludeIndex {
 			Debug(dClient, "S%d apply %d at T%d\n", rf.me, rf.lastApplied+1, rf.currentTerm)
-			msg := ApplyMsg{CommandValid: true, Command: rf.getLogByIndex(rf.lastApplied + 1).Command, CommandIndex: rf.lastApplied + 1}
+			msg := ApplyMsg{CommandValid: true, Command: rf.getLogByIndex(rf.lastApplied + 1).Command, CommandIndex: rf.lastApplied + 1, CommandTerm: rf.getLogByIndex(rf.lastApplied + 1).Term}
 			if msg.Command == nil {
 				Debug(dWarn, "S%d apply nil command index is %d at T%d\n", rf.me, msg.CommandIndex, rf.currentTerm)
 				// msg.CommandValid = false
 			}
 			rf.lastApplied++
 			rf.mu.Unlock()
+
 			rf.applyCh <- msg
 			Debug(dClient, "S%d current lastApplied is %d\n", rf.me, rf.lastApplied)
 			rf.mu.Lock()
