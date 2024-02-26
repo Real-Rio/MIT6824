@@ -55,7 +55,7 @@ func check(t *testing.T, groups []int, ck *Clerk) {
 
 func check_same_config(t *testing.T, c1 Config, c2 Config) {
 	if c1.Num != c2.Num {
-		t.Fatalf("Num wrong")
+		t.Fatalf("Num wrong,%d,%d", c1.Num, c2.Num)
 	}
 	if c1.Shards != c2.Shards {
 		t.Fatalf("Shards wrong")
@@ -79,6 +79,7 @@ func check_same_config(t *testing.T, c1 Config, c2 Config) {
 }
 
 func TestBasic(t *testing.T) {
+	Init()
 	const nservers = 3
 	cfg := make_config(t, nservers, false)
 	defer cfg.cleanup()

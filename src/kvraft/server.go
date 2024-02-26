@@ -130,19 +130,7 @@ func (kv *KVServer) applyLoop() {
 
 		if apply.SnapshotValid {
 			Debug(dSnap, "S%d restore snapshot", kv.me)
-			kv.mu.Lock()
-			r := bytes.NewBuffer(apply.Snapshot)
-			d := labgob.NewDecoder(r)
-			var kvStore map[string]string
-			var lastMsgID map[int64]int
-			// var notifyChan map[int]chan executeResult
-			if d.Decode(&kvStore) != nil || d.Decode(&lastMsgID) != nil {
-				Debug(dLog, "S%d decode snapshot error", kv.me)
-			} else {
-				kv.KVStore = kvStore
-				kv.LastMsgID = lastMsgID
-			}
-			kv.mu.Unlock()
+			kv.readSnapshot(apply.Snapshot)
 			continue
 		}
 
@@ -204,6 +192,8 @@ func (kv *KVServer) saveSnap(index int) {
 }
 
 func (kv *KVServer) readSnapshot(data []byte) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
 	Debug(dSnap, "S%d read snapshot", kv.me)
 	if data == nil || len(data) < 1 {
 		return

@@ -29,13 +29,16 @@ type Config struct {
 }
 
 const (
-	OK = "OK"
+	OK      = "OK"
+	TimeOut = "TimeOut"
 )
 
 type Err string
 
 type JoinArgs struct {
-	Servers map[int][]string // new GID -> servers mappings
+	Servers  map[int][]string // new GID -> servers mappings
+	ClientID int64
+	MsgID    int
 }
 
 type JoinReply struct {
@@ -44,7 +47,9 @@ type JoinReply struct {
 }
 
 type LeaveArgs struct {
-	GIDs []int
+	GIDs     []int
+	ClientID int64
+	MsgID    int
 }
 
 type LeaveReply struct {
@@ -53,8 +58,10 @@ type LeaveReply struct {
 }
 
 type MoveArgs struct {
-	Shard int
-	GID   int
+	Shard    int
+	GID      int
+	ClientID int64
+	MsgID    int
 }
 
 type MoveReply struct {
