@@ -1,5 +1,7 @@
 package shardkv
 
+import "time"
+
 //
 // Sharded key/value server.
 // Lots of replica groups, each running Raft.
@@ -14,19 +16,40 @@ const (
 	ErrNoKey       = "ErrNoKey"
 	ErrWrongGroup  = "ErrWrongGroup"
 	ErrWrongLeader = "ErrWrongLeader"
+	CurUnvalable   = "CurUnvalable"
+	TimeOut        = "TimeOut"
+	ErrOutDated    = "ErrOutDated"
+	// Repeated       = "Repeated"
+)
+
+// go routine interval
+const (
+	ConfigureQueryInterval = 100 * time.Millisecond
 )
 
 type Err string
 
+type ShardStatus uint8
+
+const (
+	Serving ShardStatus = iota
+	Pulling
+	BePulled
+	NeedGC // shard need to be garbage collected
+)
+
+type CommandResponse struct {
+	Err   Err
+	Value string
+}
+
 // Put or Append
 type PutAppendArgs struct {
-	// You'll have to add definitions here.
-	Key   string
-	Value string
-	Op    string // "Put" or "Append"
-	// You'll have to add definitions here.
-	// Field names must start with capital letters,
-	// otherwise RPC will break.
+	Key      string
+	Value    string
+	Op       string // "Put" or "Append"
+	ClientID int64
+	MsgID    int
 }
 
 type PutAppendReply struct {
@@ -34,8 +57,9 @@ type PutAppendReply struct {
 }
 
 type GetArgs struct {
-	Key string
-	// You'll have to add definitions here.
+	Key      string
+	ClientID int64
+	MsgID    int
 }
 
 type GetReply struct {

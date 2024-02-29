@@ -316,11 +316,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.ConflictTerm = -1
 		Debug(dLog, "S%d refuse append entries from S%d,mismatch1\n", rf.me, args.LeaderId)
 		return
-	} else if rf.getLogByIndex(args.PrevLogIndex).Term != args.PrevLogTerm { // TODO: prevLogIndex 需要大于 rf.beginIndex
+	} else if rf.getLogByIndex(args.PrevLogIndex).Term != args.PrevLogTerm { 
 		reply.Term = rf.currentTerm
 		reply.Success = false
 		reply.ConflictTerm = rf.getLogByIndex(args.PrevLogIndex).Term
-		for i := 0; i < len(rf.log); i++ { // TODO: index
+		for i := 0; i < len(rf.log); i++ { 
 			if rf.log[i].Term == reply.ConflictTerm {
 				reply.ConflictIndex = i + rf.lastIncludeIndex
 				break
@@ -339,7 +339,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if rf.getLastLog().Index > args.PrevLogIndex+len(args.Entries) {
 		for i := 1; i <= len(args.Entries); i++ {
 			if rf.getLogByIndex(args.PrevLogIndex+i) != args.Entries[i-1] {
-				rf.log = append(rf.log[:args.PrevLogIndex+1-rf.lastIncludeIndex], args.Entries...) // TODO: LogEntry 中的command可能不能直接比较
+				rf.log = append(rf.log[:args.PrevLogIndex+1-rf.lastIncludeIndex], args.Entries...) // LogEntry 中的command可能不能直接比较
 				break
 			}
 		}
@@ -478,7 +478,7 @@ func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply
 // 	rf.mu.Lock()
 // 	Debug(dSnap, "S%d apply snapshot,prevIndex is %d\n", rf.me, lastIncludeIndex)
 // 	rf.lastApplied = lastIncludeIndex
-// 	rf.commitIndex = lastIncludeIndex // TODO:不一定留
+// 	rf.commitIndex = lastIncludeIndex 
 // 	rf.mu.Unlock()
 // 	rf.applyCh <- ApplyMsg{
 // 		SnapshotValid: true,
@@ -736,7 +736,7 @@ func (rf *Raft) genInstallSnapshotRequest() *InstallSnapshotArgs {
 func (rf *Raft) replicator(peer int) {
 	rf.replicatorCond[peer].L.Lock()
 	defer rf.replicatorCond[peer].L.Unlock()
-	for !rf.killed() {
+	for !rf.Killed() {
 		// if there is no need to replicate entries for this peer, just release CPU and wait other goroutine's signal if service adds new Command
 		// if this peer needs replicating entries, this goroutine will call replicateOneRound(peer) multiple times until this peer catches up, and then wait
 		for !rf.needReplicating(peer) {
@@ -787,7 +787,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 func (rf *Raft) applier() {
 	rf.applyCond.L.Lock()
 	defer rf.applyCond.L.Unlock()
-	for !rf.killed() {
+	for !rf.Killed() {
 		for !rf.canApply() {
 			rf.applyCond.Wait()
 		}
@@ -849,13 +849,13 @@ func (rf *Raft) Kill() {
 	// Your code here, if desired.
 }
 
-func (rf *Raft) killed() bool {
+func (rf *Raft) Killed() bool {
 	z := atomic.LoadInt32(&rf.dead)
 	return z == 1
 }
 
 func (rf *Raft) ticker() {
-	for !rf.killed() {
+	for !rf.Killed() {
 		time.Sleep(rf.heartBeatInterval)
 		rf.mu.RLock()
 

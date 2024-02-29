@@ -76,7 +76,7 @@ func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
 		Operation: "Query",
 		Args:      *args,
 	}
-	// TODO:读请求放到 raft 中
+	
 	wrongLeader, err := sc.sendMsgToRaft(&command)
 	reply.WrongLeader = wrongLeader
 	reply.Err = err
