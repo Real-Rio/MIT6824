@@ -5,18 +5,17 @@ import (
 )
 
 func (kv *ShardKV) applyConfiguration(nextConfig *shardctrler.Config) *CommandResponse {
-	if nextConfig.Num > kv.currentConfig.Num {
-		// DPrintf("{Node %v}{Group %v} updates currentConfig from %v to %v", kv.rf.Me(), kv.gid, kv.currentConfig, nextConfig)
+	if nextConfig.Num == kv.currentConfig.Num+1 {
 		kv.updateShardStatus(nextConfig)
 		kv.lastConfig = kv.currentConfig
 		kv.currentConfig = *nextConfig
+		Debug(dInfo, "G%d S%d .updates currentConfig from %d to %d", kv.gid, kv.me, kv.lastConfig.Num, kv.currentConfig.Num)
 		return &CommandResponse{OK, ""}
 	}
-	// DPrintf("{Node %v}{Group %v} rejects outdated config %v when currentConfig is %v", kv.rf.Me(), kv.gid, nextConfig, kv.currentConfig)
+
 	return &CommandResponse{ErrOutDated, ""}
 }
 
-// TODO:应该加锁吗？如果修改数据的时候 config 变了怎么办
 func (kv *ShardKV) applyOperation(op *Op) *CommandResponse {
 	response := &CommandResponse{Err: OK}
 	shardID := key2shard(op.Key)
@@ -45,4 +44,37 @@ func (kv *ShardKV) applyOperation(op *Op) *CommandResponse {
 		}
 	}
 	return &CommandResponse{status, ""}
+}
+
+func (kv *ShardKV) applyInsertShards(shardsInfo *ShardOperationResponse) *CommandResponse {
+	if shardsInfo.ConfigNum == kv.currentConfig.Num {
+		for shardId, shardData := range shardsInfo.Shards {
+			if kv.stateMachines[shardId].Status == Pulling {
+				kv.stateMachines[shardId].KV = deepCopy(shardData)
+				kv.stateMachines[shardId].Status = Serving
+			}
+		}
+
+		for clientID, msgID := range shardsInfo.LastMsgID {
+			if lastmsgID, ok := kv.LastMsgID[clientID]; !ok || msgID > lastmsgID {
+				kv.LastMsgID[clientID] = msgID
+			}
+		}
+
+		return &CommandResponse{OK, ""}
+	}
+	return &CommandResponse{ErrOutDated, ""}
+}
+
+func (kv *ShardKV) applyDeleteShards(shardsInfo *ShardOperationRequest) *CommandResponse {
+	if shardsInfo.ConfigNum == kv.currentConfig.Num {
+		for _, shardId := range shardsInfo.ShardIDs {
+			shard := kv.stateMachines[shardId]
+			if shard.Status == BePulled {
+				kv.stateMachines[shardId] = NewShard()
+			}
+		}
+		return &CommandResponse{OK, ""}
+	}
+	return &CommandResponse{OK, ""}
 }

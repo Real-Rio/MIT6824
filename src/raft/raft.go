@@ -316,11 +316,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.ConflictTerm = -1
 		Debug(dLog, "S%d refuse append entries from S%d,mismatch1\n", rf.me, args.LeaderId)
 		return
-	} else if rf.getLogByIndex(args.PrevLogIndex).Term != args.PrevLogTerm { 
+	} else if rf.getLogByIndex(args.PrevLogIndex).Term != args.PrevLogTerm {
 		reply.Term = rf.currentTerm
 		reply.Success = false
 		reply.ConflictTerm = rf.getLogByIndex(args.PrevLogIndex).Term
-		for i := 0; i < len(rf.log); i++ { 
+		for i := 0; i < len(rf.log); i++ {
 			if rf.log[i].Term == reply.ConflictTerm {
 				reply.ConflictIndex = i + rf.lastIncludeIndex
 				break
@@ -338,8 +338,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// 3 4
 	if rf.getLastLog().Index > args.PrevLogIndex+len(args.Entries) {
 		for i := 1; i <= len(args.Entries); i++ {
-			if rf.getLogByIndex(args.PrevLogIndex+i) != args.Entries[i-1] {
-				rf.log = append(rf.log[:args.PrevLogIndex+1-rf.lastIncludeIndex], args.Entries...) // LogEntry 中的command可能不能直接比较
+			if rf.getLogByIndex(args.PrevLogIndex+i).Term != args.Entries[i-1].Term {
+				rf.log = append(rf.log[:args.PrevLogIndex+1-rf.lastIncludeIndex], args.Entries...) 
 				break
 			}
 		}
@@ -437,7 +437,6 @@ func (rf *Raft) getFirstLog() LogEntry {
 	return rf.log[0]
 }
 
-
 func (rf *Raft) getLastLog() LogEntry {
 	if len(rf.log) == 0 {
 		Debug(dWarn, "S%d log length is 0\n", rf.me)
@@ -478,7 +477,7 @@ func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply
 // 	rf.mu.Lock()
 // 	Debug(dSnap, "S%d apply snapshot,prevIndex is %d\n", rf.me, lastIncludeIndex)
 // 	rf.lastApplied = lastIncludeIndex
-// 	rf.commitIndex = lastIncludeIndex 
+// 	rf.commitIndex = lastIncludeIndex
 // 	rf.mu.Unlock()
 // 	rf.applyCh <- ApplyMsg{
 // 		SnapshotValid: true,

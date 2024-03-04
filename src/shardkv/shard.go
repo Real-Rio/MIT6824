@@ -26,10 +26,4 @@ func (shard *Shard) Append(key, value string) Err {
 	return OK
 }
 
-func (shard *Shard) deepCopy() map[string]string {
-	newShard := make(map[string]string)
-	for k, v := range shard.KV {
-		newShard[k] = v
-	}
-	return newShard
-}
+

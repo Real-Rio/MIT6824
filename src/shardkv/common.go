@@ -19,12 +19,14 @@ const (
 	CurUnvalable   = "CurUnvalable"
 	TimeOut        = "TimeOut"
 	ErrOutDated    = "ErrOutDated"
-	// Repeated       = "Repeated"
+	ErrNotReady    = "ErrNotReady"
 )
 
 // go routine interval
 const (
-	ConfigureQueryInterval = 100 * time.Millisecond
+	ConfigureQueryInterval = 90 * time.Millisecond
+	MigrationShardInterval = 50 * time.Millisecond
+	WaitingInterval        = 70 * time.Millisecond // wait for config to catch up
 )
 
 type Err string
@@ -35,7 +37,7 @@ const (
 	Serving ShardStatus = iota
 	Pulling
 	BePulled
-	NeedGC // shard need to be garbage collected
+	// NeedGC // shard need to be garbage collected
 )
 
 type CommandResponse struct {
@@ -65,4 +67,16 @@ type GetArgs struct {
 type GetReply struct {
 	Err   Err
 	Value string
+}
+
+type ShardOperationRequest struct {
+	ConfigNum int
+	ShardIDs  []int
+}
+
+type ShardOperationResponse struct {
+	Shards    map[int]map[string]string
+	ConfigNum int
+	Err       Err
+	LastMsgID map[int64]int
 }

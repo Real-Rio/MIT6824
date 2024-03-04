@@ -96,6 +96,7 @@ func TestStaticShards(t *testing.T) {
 }
 
 func TestJoinLeave(t *testing.T) {
+	Init()
 	fmt.Printf("Test: join then leave ...\n")
 
 	cfg := make_config(t, 3, false, -1)

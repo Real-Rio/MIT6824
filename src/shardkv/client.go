@@ -62,6 +62,7 @@ func MakeClerk(ctrlers []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 	ck.msgID = 1
 	ck.retry = 3
 	ck.curLeader = 0
+	ck.config = ck.sm.Query(-1)
 	// You'll have to add code here.
 	return ck
 }
@@ -78,11 +79,13 @@ func (ck *Clerk) Get(key string) string {
 	wrongGroup := false
 
 	for {
+		// ask controler for the latest configuration.
+		ck.config = ck.sm.Query(-1)
+
 		shard := key2shard(key)
 		gid := ck.config.Shards[shard]
 		if servers, ok := ck.config.Groups[gid]; ok {
-			// try each server for the shard.
-			// for si := 0; si < len(servers); si++ {
+
 			for {
 				si := ck.curLeader
 				wrongGroup = false
@@ -104,6 +107,7 @@ func (ck *Clerk) Get(key string) string {
 							break
 						}
 					}
+					time.Sleep(100 * time.Millisecond)
 
 				}
 				if wrongGroup {
@@ -115,8 +119,7 @@ func (ck *Clerk) Get(key string) string {
 			// }
 		}
 		time.Sleep(100 * time.Millisecond)
-		// ask controler for the latest configuration.
-		ck.config = ck.sm.Query(-1)
+
 	}
 
 }
@@ -133,6 +136,9 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	wrongGroup := false
 
 	for {
+		// ask controler for the latest configuration.
+		ck.config = ck.sm.Query(-1)
+
 		shard := key2shard(key)
 		gid := ck.config.Shards[shard]
 		if servers, ok := ck.config.Groups[gid]; ok {
@@ -169,8 +175,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 			}
 		}
 		time.Sleep(100 * time.Millisecond)
-		// ask controler for the latest configuration.
-		ck.config = ck.sm.Query(-1)
+
 	}
 }
 
