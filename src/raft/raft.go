@@ -77,10 +77,10 @@ type Raft struct {
 	currentTerm      int
 	votedFor         int // reset to -1 when term changes
 	log              []LogEntry
-	lastIncludeIndex int
-	lastIncludeTerm  int
+	lastIncludeIndex int // index of the last included log in snapshot
+	lastIncludeTerm  int // term of the last included log in snapshot
 	snapshot         []byte
-	// volatile state on all serverso
+	// volatile state on all servers
 	commitIndex int
 	lastApplied int
 	// volatile state on leaders
@@ -103,7 +103,7 @@ type LogEntry struct {
 	Command interface{}
 }
 
-// return currentTerm and whether this server
+// GetState return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
 
@@ -113,7 +113,6 @@ func (rf *Raft) GetState() (int, bool) {
 	rf.mu.Lock()
 	term = rf.currentTerm
 	isleader = rf.state == LEADER
-	// isleader = rf.isLeader
 	rf.mu.Unlock()
 	return term, isleader
 }
@@ -320,6 +319,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Term = rf.currentTerm
 		reply.Success = false
 		reply.ConflictTerm = rf.getLogByIndex(args.PrevLogIndex).Term
+		// jump over all the log entries with the conflict term
 		for i := 0; i < len(rf.log); i++ {
 			if rf.log[i].Term == reply.ConflictTerm {
 				reply.ConflictIndex = i + rf.lastIncludeIndex
@@ -339,7 +339,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if rf.getLastLog().Index > args.PrevLogIndex+len(args.Entries) {
 		for i := 1; i <= len(args.Entries); i++ {
 			if rf.getLogByIndex(args.PrevLogIndex+i).Term != args.Entries[i-1].Term {
-				rf.log = append(rf.log[:args.PrevLogIndex+1-rf.lastIncludeIndex], args.Entries...) 
+				rf.log = append(rf.log[:args.PrevLogIndex+1-rf.lastIncludeIndex], args.Entries...)
 				break
 			}
 		}
@@ -430,6 +430,7 @@ func (rf *Raft) getLogByIndex(index int) LogEntry {
 	return rf.log[index-rf.lastIncludeIndex]
 }
 
+// 去掉快照后，第一条 log
 func (rf *Raft) getFirstLog() LogEntry {
 	if len(rf.log) == 0 {
 		Debug(dWarn, "S%d log length is 0\n", rf.me)
@@ -437,6 +438,7 @@ func (rf *Raft) getFirstLog() LogEntry {
 	return rf.log[0]
 }
 
+// 最后一条 log
 func (rf *Raft) getLastLog() LogEntry {
 	if len(rf.log) == 0 {
 		Debug(dWarn, "S%d log length is 0\n", rf.me)
@@ -576,12 +578,7 @@ func (rf *Raft) leaderBroadCast(isHeartBeat bool) {
 
 	for i := 0; i < len(rf.peers); i++ {
 		if i != rf.me {
-			if isHeartBeat {
-				go rf.replicateOneRound(i)
-			} else {
-				rf.replicatorCond[i].Signal()
-			}
-
+			go rf.replicateOneRound(i)
 		}
 	}
 }
@@ -730,20 +727,6 @@ func (rf *Raft) genInstallSnapshotRequest() *InstallSnapshotArgs {
 	request.LastIncludedTerm = rf.lastIncludeTerm
 	request.Data = rf.snapshot
 	return request
-}
-
-func (rf *Raft) replicator(peer int) {
-	rf.replicatorCond[peer].L.Lock()
-	defer rf.replicatorCond[peer].L.Unlock()
-	for !rf.Killed() {
-		// if there is no need to replicate entries for this peer, just release CPU and wait other goroutine's signal if service adds new Command
-		// if this peer needs replicating entries, this goroutine will call replicateOneRound(peer) multiple times until this peer catches up, and then wait
-		for !rf.needReplicating(peer) {
-			rf.replicatorCond[peer].Wait()
-		}
-		// maybe a pipeline mechanism is better to trade-off the memory usage and catch up time
-		rf.replicateOneRound(peer)
-	}
 }
 
 func (rf *Raft) needReplicating(peer int) bool {
@@ -899,18 +882,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// Your initialization code here (2A, 2B, 2C).
 	rf.readPersist(persister.ReadRaftState(), persister.ReadSnapshot())
 
-	for i := 0; i < len(peers); i++ {
-		// rf.matchIndex[i], rf.nextIndex[i] = 0, lastLog.Index+1
-		if i != rf.me {
-			rf.replicatorCond[i] = sync.NewCond(&sync.Mutex{})
-			// start replicator goroutine to replicate entries in batch
-			go rf.replicator(i)
-		}
-	}
 	rf.resetTimer()
-
-	// initialize from state persisted before a crash
-	// rf.readPersist(persister.ReadRaftState())
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
